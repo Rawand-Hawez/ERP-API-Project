@@ -223,6 +223,8 @@ function processFinancialData(
     amountIQD: Math.abs(entry.creditIQD),
     amountUSD: Math.abs(entry.creditUSD),
     description: entry.description,
+    costCenter: entry.costCenter,
+    profitCenter: entry.profitCenter,
     currency: entry.currency,
   }));
 
