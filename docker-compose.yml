@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # ERP API - Unified service with Bun runtime
+  erp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=3080
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRY=1h
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - TENANT_ID=${TENANT_ID}
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+      - DYNAMICS_BASE_URL=${DYNAMICS_BASE_URL}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX=100
+    networks:
+      - erp-network
+    restart: unless-stopped
+    ports:
+      - "3080:3080"
+
+networks:
+  erp-network:
+    driver: bridge
