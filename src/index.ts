@@ -147,28 +147,46 @@ function processFinancialData(
   // Transform account entries
   const transformedEntries = accountEntries.map((accountEntry: any) => {
     const journalEntry = journalEntries.find((je: any) => je.SourceKey === accountEntry.GeneralJournalEntry);
-    
+
     // Parse ledger dimensions
     const dimensions = parseLedgerDimensions(accountEntry.LedgerDimensionValuesJson || '[]');
     const mainAccount = dimensions.mainAccount || accountEntry.LedgerAccount.replace(/---$/, '');
-    
-    const amount = accountEntry.TransactionCurrencyAmount || 0;
+
+    // Get the actual transaction currency from Dynamics 365
+    const transactionCurrency = accountEntry.TransactionCurrencyCode || 'IQD';
+    const transactionAmount = accountEntry.TransactionCurrencyAmount || 0;
+    const accountingAmount = accountEntry.AccountingCurrencyAmount || transactionAmount;
+
+    // Determine amounts in both currencies
+    let amountIQD: number;
+    let amountUSD: number;
+
+    if (transactionCurrency === 'USD') {
+      // Transaction is in USD, convert to IQD
+      amountUSD = transactionAmount;
+      amountIQD = Math.round(transactionAmount * customExchangeRate * 100) / 100;
+    } else {
+      // Transaction is in IQD (or use accounting currency amount)
+      amountIQD = transactionCurrency === 'IQD' ? transactionAmount : accountingAmount;
+      amountUSD = Math.round((amountIQD / customExchangeRate) * 100) / 100;
+    }
+
     const isDebit = accountEntry.IsCredit === 'No';
     const accountType = classifyAccountType(mainAccount);
-    
+
     return {
       accountNumber: mainAccount,
       accountName: getAccountName(mainAccount, accountType),
-      debit: isDebit ? amount : 0,
-      credit: !isDebit ? amount : 0,
-      balance: amount * (isDebit ? 1 : -1),
+      debit: isDebit ? transactionAmount : 0,
+      credit: !isDebit ? transactionAmount : 0,
+      balance: transactionAmount * (isDebit ? 1 : -1),
       date: journalEntry?.AccountingDate || new Date().toISOString().split('T')[0],
       description: accountEntry.Text || '',
-      currency: 'IQD',
-      debitIQD: isDebit ? amount : 0,
-      creditIQD: !isDebit ? amount : 0,
-      debitUSD: Math.round((amount / customExchangeRate) * 100) / 100,
-      creditUSD: Math.round((amount / customExchangeRate) * 100) / 100,
+      currency: transactionCurrency,
+      debitIQD: isDebit ? amountIQD : 0,
+      creditIQD: !isDebit ? amountIQD : 0,
+      debitUSD: isDebit ? amountUSD : 0,
+      creditUSD: !isDebit ? amountUSD : 0,
       costCenter: dimensions.costCenter,
       profitCenter: dimensions.profitCenter,
       accountType,
@@ -201,7 +219,9 @@ function processFinancialData(
   const revenueDetails = revenueEntries.map(entry => ({
     accountNumber: entry.accountNumber,
     accountName: entry.accountName,
-    amount: Math.abs(entry.creditIQD),
+    amount: Math.abs(entry.credit),
+    amountIQD: Math.abs(entry.creditIQD),
+    amountUSD: Math.abs(entry.creditUSD),
     description: entry.description,
     currency: entry.currency,
   }));
@@ -210,12 +230,28 @@ function processFinancialData(
   const costLineItems = costEntries.map(entry => ({
     accountNumber: entry.accountNumber,
     accountName: entry.accountName,
-    amount: entry.debitIQD,
+    amount: entry.debit,
+    amountIQD: entry.debitIQD,
+    amountUSD: entry.debitUSD,
     description: entry.description,
     costCenter: entry.costCenter,
     profitCenter: entry.profitCenter,
     currency: entry.currency,
   }));
+
+  // Calculate currency breakdown
+  const currencyBreakdown = {
+    IQD: {
+      count: transformedEntries.filter(e => e.currency === 'IQD').length,
+      totalDebit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + e.debitIQD, 0),
+      totalCredit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + e.creditIQD, 0),
+    },
+    USD: {
+      count: transformedEntries.filter(e => e.currency === 'USD').length,
+      totalDebit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + e.debit, 0),
+      totalCredit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + e.credit, 0),
+    },
+  };
 
   return {
     subsidiary,
@@ -229,6 +265,7 @@ function processFinancialData(
     netProfitUSD,
     exchangeRate: customExchangeRate,
     baseCurrency: 'IQD',
+    currencyBreakdown,
     revenueDetails,
     costLineItems,
     entryCount: transformedEntries.length,
@@ -789,7 +826,7 @@ app.get('/api/financial/:subsidiary/:year/:month',
           const batch = journalEntryKeys.slice(i, i + batchSize);
           const filterConditions = batch.map(key => `GeneralJournalEntry eq ${key}`).join(' or ');
 
-          const accountUrl = `${DYNAMICS_CONFIG.DYNAMICS_BASE_URL}/data/GeneralJournalAccountEntryBiEntities?$filter=${filterConditions}&$select=GeneralJournalEntry,LedgerAccount,IsCredit,TransactionCurrencyAmount,Text,LedgerDimensionValuesJson`;
+          const accountUrl = `${DYNAMICS_CONFIG.DYNAMICS_BASE_URL}/data/GeneralJournalAccountEntryBiEntities?$filter=${filterConditions}&$select=GeneralJournalEntry,LedgerAccount,IsCredit,TransactionCurrencyAmount,TransactionCurrencyCode,AccountingCurrencyAmount,Text,LedgerDimensionValuesJson`;
 
           const accountResponse = await fetch(accountUrl, {
             headers: {
