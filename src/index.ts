@@ -205,9 +205,9 @@ function processFinancialData(
   const revenueEntries = filteredEntries.filter(entry => entry.accountType === 'revenue');
   const costEntries = filteredEntries.filter(entry => entry.accountType === 'cost');
 
-  // Calculate totals
-  const totalRevenue = revenueEntries.reduce((sum: number, entry: any) => sum + entry.creditIQD, 0);
-  const totalCosts = costEntries.reduce((sum: number, entry: any) => sum + entry.debitIQD, 0);
+  // Calculate totals (use absolute values for proper accounting)
+  const totalRevenue = revenueEntries.reduce((sum: number, entry: any) => sum + Math.abs(entry.creditIQD), 0);
+  const totalCosts = costEntries.reduce((sum: number, entry: any) => sum + Math.abs(entry.debitIQD), 0);
   const netProfit = totalRevenue - totalCosts;
 
   // Calculate USD amounts
@@ -243,13 +243,13 @@ function processFinancialData(
   const currencyBreakdown = {
     IQD: {
       count: transformedEntries.filter(e => e.currency === 'IQD').length,
-      totalDebit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + e.debitIQD, 0),
-      totalCredit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + e.creditIQD, 0),
+      totalDebit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + Math.abs(e.debitIQD), 0),
+      totalCredit: transformedEntries.filter(e => e.currency === 'IQD').reduce((sum, e) => sum + Math.abs(e.creditIQD), 0),
     },
     USD: {
       count: transformedEntries.filter(e => e.currency === 'USD').length,
-      totalDebit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + e.debit, 0),
-      totalCredit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + e.credit, 0),
+      totalDebit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + Math.abs(e.debit), 0),
+      totalCredit: transformedEntries.filter(e => e.currency === 'USD').reduce((sum, e) => sum + Math.abs(e.credit), 0),
     },
   };
 
