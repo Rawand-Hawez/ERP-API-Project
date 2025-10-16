@@ -134,6 +134,241 @@ const operatingUnits = [
   { code: 'PC001', name: 'Profit Center 1', type: 'profit_center' },
   { code: 'PC002', name: 'Profit Center 2', type: 'profit_center' },
 ];
+// Financial data processing function
+function processFinancialData(
+  accountEntries: any[],
+  journalEntries: any[],
+  subsidiary: string,
+  year: number,
+  month: number,
+  profitCenterFilter?: string,
+  customExchangeRate: number = 1400
+) {
+  // Transform account entries
+  const transformedEntries = accountEntries.map((accountEntry: any) => {
+    const journalEntry = journalEntries.find((je: any) => je.SourceKey === accountEntry.GeneralJournalEntry);
+    
+    // Parse ledger dimensions
+    const dimensions = parseLedgerDimensions(accountEntry.LedgerDimensionValuesJson || '[]');
+    const mainAccount = dimensions.mainAccount || accountEntry.LedgerAccount.replace(/---$/, '');
+    
+    const amount = accountEntry.TransactionCurrencyAmount || 0;
+    const isDebit = accountEntry.IsCredit === 'No';
+    const accountType = classifyAccountType(mainAccount);
+    
+    return {
+      accountNumber: mainAccount,
+      accountName: getAccountName(mainAccount, accountType),
+      debit: isDebit ? amount : 0,
+      credit: !isDebit ? amount : 0,
+      balance: amount * (isDebit ? 1 : -1),
+      date: journalEntry?.AccountingDate || new Date().toISOString().split('T')[0],
+      description: accountEntry.Text || '',
+      currency: 'IQD',
+      debitIQD: isDebit ? amount : 0,
+      creditIQD: !isDebit ? amount : 0,
+      debitUSD: Math.round((isDebit ? amount / customExchangeRate) * 100) / 100,
+      creditUSD: Math.round((!isDebit ? amount / customExchangeRate) * 100) / 100,
+      costCenter: dimensions.costCenter,
+      profitCenter: dimensions.profitCenter,
+      accountType,
+    };
+  });
+
+  // Filter by profit center if specified
+  let filteredEntries = transformedEntries;
+  if (profitCenterFilter) {
+    filteredEntries = transformedEntries.filter(entry =>
+      entry.profitCenter === profitCenterFilter
+    );
+  }
+
+  // Separate revenue and cost entries
+  const revenueEntries = filteredEntries.filter(entry => entry.accountType === 'revenue');
+  const costEntries = filteredEntries.filter(entry => entry.accountType === 'cost');
+
+  // Calculate totals
+  const totalRevenue = revenueEntries.reduce((sum: number, entry: any) => sum + entry.creditIQD, 0);
+  const totalCosts = costEntries.reduce((sum: number, entry: any) => sum + entry.debitIQD, 0);
+  const netProfit = totalRevenue - totalCosts;
+
+  // Calculate USD amounts
+  const totalRevenueUSD = Math.round((totalRevenue / customExchangeRate) * 100) / 100;
+  const totalCostsUSD = Math.round((totalCosts / customExchangeRate) * 100) / 100;
+  const netProfitUSD = Math.round((netProfit / customExchangeRate) * 100) / 100;
+
+  // Create revenue details
+  const revenueDetails = revenueEntries.map(entry => ({
+    accountNumber: entry.accountNumber,
+    accountName: entry.accountName,
+    amount: Math.abs(entry.creditIQD),
+    description: entry.description,
+    currency: entry.currency,
+  }));
+
+  // Create cost line items
+  const costLineItems = costEntries.map(entry => ({
+    accountNumber: entry.accountNumber,
+    accountName: entry.accountName,
+    amount: entry.debitIQD,
+    description: entry.description,
+    costCenter: entry.costCenter,
+    profitCenter: entry.profitCenter,
+    currency: entry.currency,
+  }));
+
+  return {
+    subsidiary,
+    year,
+    month,
+    totalRevenue: Math.abs(totalRevenue),
+    totalCosts,
+    netProfit,
+    totalRevenueUSD,
+    totalCostsUSD,
+    netProfitUSD,
+    exchangeRate: customExchangeRate,
+    baseCurrency: 'IQD',
+    revenueDetails,
+    costLineItems,
+    entryCount: transformedEntries.length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// Helper functions for financial data processing
+function parseLedgerDimensions(dimensionJson: string): { mainAccount?: string; costCenter?: string; profitCenter?: string } {
+  try {
+    const dimensions = JSON.parse(dimensionJson || '[]');
+    let mainAccount: string | undefined;
+    let costCenter: string | undefined;
+    let profitCenter: string | undefined;
+
+    const costCenterCodes = ['100', '110', '140', '141', '145', '150', '160', '170', '180', '190', '200', '999'];
+
+    for (const dimension of dimensions) {
+      for (const [key, value] of Object.entries(dimension)) {
+        if (key === 'MAINACCOUNT') {
+          mainAccount = value as string;
+        } else if (costCenterCodes.includes(value as string)) {
+          costCenter = value as string;
+        } else {
+          profitCenter = value as string;
+        }
+      }
+    }
+
+    return { mainAccount, costCenter, profitCenter };
+  } catch (error) {
+    console.error('Error parsing ledger dimensions:', error);
+    return {};
+  }
+}
+
+function classifyAccountType(accountNumber: string): 'revenue' | 'cost' | 'other' {
+  // Revenue accounts (5000* series)
+  if (accountNumber.startsWith('5000') || accountNumber.startsWith('5001') || 
+      accountNumber.startsWith('5002') || accountNumber.startsWith('5003') ||
+      accountNumber.startsWith('5004') || accountNumber.startsWith('5005') ||
+      accountNumber.startsWith('5006') || accountNumber.startsWith('5007') ||
+      accountNumber.startsWith('5008') || accountNumber.startsWith('5009') ||
+      accountNumber.startsWith('50010') || accountNumber.startsWith('50011') ||
+      accountNumber.startsWith('5100') || accountNumber.startsWith('5200') ||
+      accountNumber.startsWith('5300')) {
+    return 'revenue';
+  }
+
+  // Cost accounts (6000* and 7000* series)
+  if (accountNumber.startsWith('6000') || accountNumber.startsWith('6100') ||
+      accountNumber.startsWith('6200') || accountNumber.startsWith('6300') ||
+      accountNumber.startsWith('6900') || accountNumber.startsWith('7000') ||
+      accountNumber.startsWith('7002') || accountNumber.startsWith('7003') ||
+      accountNumber.startsWith('7010') || accountNumber.startsWith('7011') ||
+      accountNumber.startsWith('7012') || accountNumber.startsWith('7013') ||
+      accountNumber.startsWith('7014') || accountNumber.startsWith('7015') ||
+      accountNumber.startsWith('7016') || accountNumber.startsWith('7017') ||
+      accountNumber.startsWith('7018') || accountNumber.startsWith('7100') ||
+      accountNumber.startsWith('7102') || accountNumber.startsWith('7103') ||
+      accountNumber.startsWith('7104') || accountNumber.startsWith('7110') ||
+      accountNumber.startsWith('7111') || accountNumber.startsWith('7112') ||
+      accountNumber.startsWith('7114') || accountNumber.startsWith('7115') ||
+      accountNumber.startsWith('7116') || accountNumber.startsWith('7117') ||
+      accountNumber.startsWith('7118') || accountNumber.startsWith('7119') ||
+      accountNumber.startsWith('7120') || accountNumber.startsWith('7121') ||
+      accountNumber.startsWith('7130') || accountNumber.startsWith('7140') ||
+      accountNumber.startsWith('7150') || accountNumber.startsWith('7160') ||
+      accountNumber.startsWith('7200') || accountNumber.startsWith('7201') ||
+      accountNumber.startsWith('7202') || accountNumber.startsWith('7203') ||
+      accountNumber.startsWith('7204') || accountNumber.startsWith('7210') ||
+      accountNumber.startsWith('7220') || accountNumber.startsWith('7221') ||
+      accountNumber.startsWith('7222') || accountNumber.startsWith('7225') ||
+      accountNumber.startsWith('7230') || accountNumber.startsWith('7232') ||
+      accountNumber.startsWith('7235') || accountNumber.startsWith('7240') ||
+      accountNumber.startsWith('7242') || accountNumber.startsWith('7244') ||
+      accountNumber.startsWith('7250') || accountNumber.startsWith('7260') ||
+      accountNumber.startsWith('7263') || accountNumber.startsWith('7264') ||
+      accountNumber.startsWith('7265') || accountNumber.startsWith('7266') ||
+      accountNumber.startsWith('7267') || accountNumber.startsWith('7268') ||
+      accountNumber.startsWith('7273') || accountNumber.startsWith('7287') ||
+      accountNumber.startsWith('7300') || accountNumber.startsWith('7400') ||
+      accountNumber.startsWith('7460') || accountNumber.startsWith('7470')) {
+    return 'cost';
+  }
+
+  // Special cash account handling
+  if (accountNumber.startsWith('100004')) return 'revenue'; // Customer payments
+  if (accountNumber.startsWith('100003')) return 'cost'; // Petty cash expenses
+
+  return 'other';
+}
+
+function getAccountName(accountNumber: string, accountType: string): string {
+  // You can expand this with actual account names from your chart of accounts
+  const accountNames: Record<string, string> = {
+    '50001': 'Service Revenue',
+    '50002': 'Product Sales',
+    '50003': 'Consulting Revenue',
+    '50004': 'Sales Discount',
+    '50005': 'Purchase Revenue',
+    '50006': 'Product Revenue',
+    '50007': 'Sales Return',
+    '50008': 'E-Commerce Revenue',
+    '50009': 'Subscription Revenue',
+    '50010': 'Telecom Revenue',
+    '50011': 'Other Sales Revenue',
+    '6000': 'Cost of Goods Sold',
+    '6100': 'Project Expenses',
+    '6200': 'Rental Expense',
+    '6300': 'Subcontractor Cost',
+    '6900': 'Project Salaries',
+    '7000': 'Direct Salary',
+    '7002': 'Overtime',
+    '7003': 'Medical Allowance',
+    '7010': 'Housing Allowance',
+    '7011': 'Transportation Allowance',
+    '7012': 'Education Allowance',
+    '7013': 'Annual Leave Tickets',
+    '7014': 'Bonus',
+    '7015': 'End of Service',
+    '7016': 'Consultant/Contractor Fees',
+    '7017': 'Residency/Visa-Employees',
+    '7018': 'Vehicle Rental',
+    '7100': 'Office Rent',
+    '7102': 'Utilities',
+    '7103': 'Office Repair Maintenance',
+    '7104': 'Business Development',
+    '7110': 'Depreciation - Furniture',
+    '7111': 'Depreciation - Computers',
+    '7112': 'Depreciation - Equipment',
+    '7114': 'Depreciation - Cars',
+    '7115': 'Depreciation - Other Fixed Assets',
+  };
+
+  return accountNames[accountNumber] || 
+         (accountType === 'revenue' ? 'Revenue Account' : 
+          accountType === 'cost' ? 'Expense Account' : 'Other Account');
+}
+
 
 // JWT Authentication middleware
 const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -496,67 +731,88 @@ app.get('/api/financial/:subsidiary/:year/:month',
         return res.status(400).json({ error: 'Invalid year or month' });
       }
 
-      // Mock financial data
-      const mockFinancialData = {
-        subsidiary,
-        year: yearNum,
-        month: monthNum,
-        totalRevenue: Math.floor(Math.random() * 1000000) + 500000,
-        totalCosts: Math.floor(Math.random() * 800000) + 300000,
-        totalRevenueUSD: 0,
-        totalCostsUSD: 0,
-        netProfit: 0,
-        netProfitUSD: 0,
-        exchangeRate: exchangeRate ? parseFloat(exchangeRate as string) : 1400,
-        baseCurrency: 'IQD',
-        revenueDetails: [
-          {
-            accountNumber: '50001',
-            accountName: 'Service Revenue',
-            amount: 500000,
-            description: 'Consulting services',
-            currency: 'IQD',
-          },
-          {
-            accountNumber: '50002',
-            accountName: 'Product Sales',
-            amount: 300000,
-            description: 'Product sales',
-            currency: 'IQD',
-          },
-        ],
-        costLineItems: [
-          {
-            accountNumber: '7000',
-            accountName: 'Direct Salary',
-            amount: 200000,
-            description: 'Employee salaries',
-            costCenter: '110',
-            profitCenter: profitCenter as string || 'PC001',
-            currency: 'IQD',
-          },
-          {
-            accountNumber: '7100',
-            accountName: 'Office Rent',
-            amount: 50000,
-            description: 'Monthly office rent',
-            costCenter: '140',
-            profitCenter: profitCenter as string || 'PC001',
-            currency: 'IQD',
-          },
-        ],
-        entryCount: 50,
-        generatedAt: new Date().toISOString(),
-      };
+      // Get real Dynamics 365 financial data
+      try {
+        // Get access token
+        const tokenData = await getDynamicsAccessToken();
+        const accessToken = tokenData.access_token;
 
-      // Calculate USD amounts
-      const rate = mockFinancialData.exchangeRate;
-      mockFinancialData.totalRevenueUSD = Math.round((mockFinancialData.totalRevenue / rate) * 100) / 100;
-      mockFinancialData.totalCostsUSD = Math.round((mockFinancialData.totalCosts / rate) * 100) / 100;
-      mockFinancialData.netProfit = mockFinancialData.totalRevenue - mockFinancialData.totalCosts;
-      mockFinancialData.netProfitUSD = Math.round((mockFinancialData.netProfit / rate) * 100) / 100;
+        // Calculate date range for the month
+        const startDate = new Date(yearNum, monthNum - 1, 1);
+        const endDate = new Date(yearNum, monthNum, 1);
+        const startDateStr = startDate.toISOString().split('T')[0];
+        const endDateStr = endDate.toISOString().split('T')[0];
 
-      res.json(mockFinancialData);
+        // Fetch journal entries from Dynamics 365
+        const journalUrl = `${DYNAMICS_CONFIG.DYNAMICS_BASE_URL}/data/GeneralJournalEntryBiEntities?$filter=SubledgerVoucherDataAreaId eq '${subsidiary}' and AccountingDate ge ${startDateStr} and AccountingDate lt ${endDateStr}&$select=SourceKey,JournalNumber,AccountingDate,SubledgerVoucherDataAreaId`;
+        
+        const journalResponse = await fetch(journalUrl, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!journalResponse.ok) {
+          throw new Error(`Dynamics 365 API error: ${journalResponse.statusText}`);
+        }
+
+        const journalData = await journalResponse.json() as { value: any[] };
+        const journalEntries = journalData.value || [];
+
+        if (journalEntries.length === 0) {
+          return res.json({
+            subsidiary,
+            year: yearNum,
+            month: monthNum,
+            totalRevenue: 0,
+            totalCosts: 0,
+            totalRevenueUSD: 0,
+            totalCostsUSD: 0,
+            netProfit: 0,
+            netProfitUSD: 0,
+            exchangeRate: exchangeRate ? parseFloat(exchangeRate as string) : 1400,
+            baseCurrency: 'IQD',
+            revenueDetails: [],
+            costLineItems: [],
+            entryCount: 0,
+            generatedAt: new Date().toISOString(),
+          });
+        }
+
+        // Fetch account entries for all journal entries
+        const journalEntryKeys = journalEntries.map((entry: any) => entry.SourceKey);
+        const batchSize = 10;
+        const allAccountEntries: any[] = [];
+
+        for (let i = 0; i < journalEntryKeys.length; i += batchSize) {
+          const batch = journalEntryKeys.slice(i, i + batchSize);
+          const filterConditions = batch.map(key => `GeneralJournalEntry eq ${key}`).join(' or ');
+
+          const accountUrl = `${DYNAMICS_CONFIG.DYNAMICS_BASE_URL}/data/GeneralJournalAccountEntryBiEntities?$filter=${filterConditions}&$select=GeneralJournalEntry,LedgerAccount,IsCredit,TransactionCurrencyAmount,Text,LedgerDimensionValuesJson`;
+
+          const accountResponse = await fetch(accountUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          if (accountResponse.ok) {
+            const accountData = await accountResponse.json() as { value: any[] };
+            allAccountEntries.push(...(accountData.value || []));
+          }
+        }
+
+        // Process and aggregate the data
+        const rate = exchangeRate ? parseFloat(exchangeRate as string) : 1400;
+        const aggregatedData = processFinancialData(allAccountEntries, journalEntries, subsidiary, yearNum, monthNum, profitCenter as string, rate);
+
+        res.json(aggregatedData);
+      } catch (error: any) {
+        console.error('Error fetching Dynamics 365 data:', error);
+        res.status(500).json({ error: 'Failed to fetch financial data from Dynamics 365' });
+      }
     } catch (error: any) {
       console.error('Error fetching financial data:', error);
       res.status(500).json({ error: error.message });
