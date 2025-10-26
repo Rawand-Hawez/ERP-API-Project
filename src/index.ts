@@ -37,14 +37,7 @@ app.use(helmet({
 
 // CORS configuration
 const corsOptions: cors.CorsOptions = {
-  origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'), false);
-    }
-  },
+  origin: '*', // Allow all origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -82,7 +75,7 @@ interface AuthenticatedRequest extends Request {
     userId: string;
     username: string;
     role: string;
-    subsidiaries?: string[];
+    legalEntities?: string[];
   };
 }
 
@@ -90,18 +83,18 @@ interface User {
   username: string;
   password: string;
   role: string;
-  subsidiaries: string[];
+  legalEntities: string[];
 }
 
 // Mock users (in production, use proper database)
 const users: User[] = [
-  { username: 'admin', password: 'admin123', role: 'admin', subsidiaries: ['*'] },
-  { username: 'finance', password: 'finance123', role: 'finance', subsidiaries: ['KRD', 'KRDSUB1'] },
-  { username: 'readonly', password: 'readonly123', role: 'readonly', subsidiaries: ['KRD'] },
+  { username: 'admin', password: 'admin123', role: 'admin', legalEntities: ['*'] },
+  { username: 'finance', password: 'finance123', role: 'finance', legalEntities: ['KRD', 'KRDSUB1'] },
+  { username: 'readonly', password: 'readonly123', role: 'readonly', legalEntities: ['KRD'] },
 ];
 
-// Mock subsidiaries data
-const subsidiaries = [
+// Mock legal entities data
+const legalEntities = [
   {
     LegalEntityId: 'KH01',
     Name: 'KRD Holding Main',
@@ -425,7 +418,7 @@ const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextF
       userId: decoded.userId,
       username: decoded.username,
       role: decoded.role,
-      subsidiaries: decoded.subsidiaries,
+      legalEntities: decoded.legalEntities,
     };
     next();
   } catch (error) {
@@ -454,31 +447,31 @@ const authorizeRoles = (...allowedRoles: string[]) => {
   };
 };
 
-// Subsidiary access authorization middleware
-const authorizeSubsidiaryAccess = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+// Legal entity access authorization middleware
+const authorizeLegalEntityAccess = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   if (!req.user) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
 
-  // Admin users have access to all subsidiaries
+  // Admin users have access to all legal entities
   if (req.user.role === 'admin') {
     next();
     return;
   }
 
-  const requestedSubsidiary = (req as any).params.subsidiary;
-  if (!requestedSubsidiary) {
-    res.status(400).json({ error: 'Subsidiary parameter required' });
+  const requestedLegalEntity = (req as any).params.subsidiary;
+  if (!requestedLegalEntity) {
+    res.status(400).json({ error: 'Legal entity parameter required' });
     return;
   }
 
-  // Check if user has access to the requested subsidiary
-  if (req.user.subsidiaries && !req.user.subsidiaries.includes(requestedSubsidiary)) {
+  // Check if user has access to the requested legal entity
+  if (req.user.legalEntities && !req.user.legalEntities.includes(requestedLegalEntity)) {
     res.status(403).json({
-      error: 'Access denied to this subsidiary',
-      subsidiary: requestedSubsidiary,
-      userSubsidiaries: req.user.subsidiaries
+      error: 'Access denied to this legal entity',
+      legalEntity: requestedLegalEntity,
+      userLegalEntities: req.user.legalEntities
     });
     return;
   }
@@ -585,7 +578,8 @@ app.get('/', (req, res) => {
       'GET /test': 'Test endpoint (public)',
       'POST /api/auth/login': 'User login (public)',
       'GET /api/token': 'Get Dynamics 365 access token (authenticated)',
-      'GET /api/subsidiaries': 'Get all subsidiaries (admin/finance)',
+      'GET /api/legal-entities': 'Get all legal entities (admin/finance)',
+      'GET /api/subsidiaries': 'Get all legal entities (admin/finance) - deprecated, use /api/legal-entities',
       'GET /api/financial/:subsidiary/:year/:month': 'Get financial data (authenticated)',
     },
     default_users: {
@@ -622,7 +616,7 @@ app.post('/api/auth/login', authRateLimit, async (req: Request, res: Response) =
         userId: user.username,
         username: user.username,
         role: user.role,
-        subsidiaries: user.subsidiaries,
+        legalEntities: user.legalEntities,
       },
       JWT_SECRET,
       { expiresIn: '1h' }
@@ -633,7 +627,7 @@ app.post('/api/auth/login', authRateLimit, async (req: Request, res: Response) =
       user: {
         username: user.username,
         role: user.role,
-        subsidiaries: user.subsidiaries,
+        legalEntities: user.legalEntities,
       },
     });
   } catch (error: any) {
@@ -660,7 +654,27 @@ app.get('/api/token',
 );
 
 /**
- * Get all subsidiaries
+ * Get all legal entities
+ */
+app.get('/api/legal-entities',
+  authenticateToken,
+  authorizeRoles('admin', 'finance'),
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      res.json({
+        legalEntities,
+        count: legalEntities.length,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error('Error fetching legal entities:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * Get all legal entities (deprecated - use /api/legal-entities)
  */
 app.get('/api/subsidiaries',
   authenticateToken,
@@ -668,19 +682,42 @@ app.get('/api/subsidiaries',
   (req: AuthenticatedRequest, res: Response) => {
     try {
       res.json({
-        subsidiaries,
-        count: subsidiaries.length,
+        legalEntities,
+        count: legalEntities.length,
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
-      console.error('Error fetching subsidiaries:', error);
+      console.error('Error fetching legal entities:', error);
       res.status(500).json({ error: error.message });
     }
   }
 );
 
 /**
- * Get subsidiary by code
+ * Get legal entity by code
+ */
+app.get('/api/legal-entities/:code',
+  authenticateToken,
+  authorizeRoles('admin', 'finance'),
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { code } = req.params;
+      const legalEntity = legalEntities.find((entity) => entity.LegalEntityId === code);
+
+      if (!legalEntity) {
+        return res.status(404).json({ error: 'Legal entity not found' });
+      }
+
+      res.json(legalEntity);
+    } catch (error: any) {
+      console.error('Error fetching legal entity:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * Get legal entity by code (deprecated - use /api/legal-entities/:code)
  */
 app.get('/api/subsidiaries/:code',
   authenticateToken,
@@ -688,15 +725,15 @@ app.get('/api/subsidiaries/:code',
   (req: AuthenticatedRequest, res: Response) => {
     try {
       const { code } = req.params;
-      const subsidiary = subsidiaries.find((sub) => sub.LegalEntityId === code);
+      const legalEntity = legalEntities.find((entity) => entity.LegalEntityId === code);
 
-      if (!subsidiary) {
-        return res.status(404).json({ error: 'Subsidiary not found' });
+      if (!legalEntity) {
+        return res.status(404).json({ error: 'Legal entity not found' });
       }
 
-      res.json(subsidiary);
+      res.json(legalEntity);
     } catch (error: any) {
-      console.error('Error fetching subsidiary:', error);
+      console.error('Error fetching legal entity:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -756,7 +793,7 @@ app.get('/api/operating-units/:type',
  */
 app.get('/api/financial/:subsidiary/:year/:month',
   authenticateToken,
-  authorizeSubsidiaryAccess,
+  authorizeLegalEntityAccess,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { subsidiary, year, month } = req.params;
@@ -864,7 +901,7 @@ app.get('/api/financial/:subsidiary/:year/:month',
  */
 app.get('/api/financial/:subsidiary/:year/:month/pl',
   authenticateToken,
-  authorizeSubsidiaryAccess,
+  authorizeLegalEntityAccess,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { subsidiary, year, month } = req.params;
